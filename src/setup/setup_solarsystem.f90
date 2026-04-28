@@ -26,9 +26,9 @@ module setup
  implicit none
  public :: setpart
 
- integer :: np_apophis
- logical :: asteroids
- character(len=20) :: epoch,tmax_in,dtmax_in
+integer :: np_apophis
+logical :: asteroids
+character(len=20) :: epoch,tmax_in,dtmax_in,m_apophis_in
  logical :: use_dem,apophis_only
 
  real :: scale_vel
@@ -69,7 +69,7 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  real,              intent(inout) :: time
  character(len=20), intent(in)    :: fileprefix
  real,              intent(out)   :: vxyzu(:,:)
- integer :: ierr,i,nerr
+integer :: ierr,i,nerr,ierr_mass
  !integer :: values(8),year,month,day
  real    :: period,semia,mtot,dx
  real    :: r_apophis,m_apophis,rtidal,spsoundmin
@@ -78,6 +78,7 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
 !
  tmax_in = '1000 yr'
  dtmax_in = '1 yr'
+m_apophis_in = ''
  asteroids = .true.
  np_apophis = 0
  use_dem = .false.
@@ -161,7 +162,12 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
     xyzmh_ptmass(5,nptmass) = r_apophis
     print "(a,1pg10.3)",' apophis radius scaled by ',scale_r_apophis
 
-    m_apophis = 4./3.*pi*(rho_0*scale_rho/unit_density)*r_apophis**3
+   if (len_trim(m_apophis_in) > 0) then
+      m_apophis = in_code_units(m_apophis_in,ierr_mass,unit_type='mass')
+      if (ierr_mass /= 0) call fatal('setup_solarsystem',' could not parse m_apophis_in')
+   else
+      m_apophis = 4./3.*pi*(rho_0*scale_rho/unit_density)*r_apophis**3
+   endif
     xyzmh_ptmass(4,nptmass) = m_apophis
     print "(a,2(es10.3,a))",' mass of apophis is ',m_apophis*umass,&
                             ' g or ',m_apophis*umass/ceresm,' ceres masses'
@@ -258,6 +264,7 @@ subroutine write_setupfile(filename)
  write(iunit,"(a)") '# input file for solar system setup routines'
  call write_inopt(tmax_in,'tmax_in','end time of simulation (e.g. 3 days)',iunit)
  call write_inopt(dtmax_in,'dtmax_in','time between dumps (e.g. 1 hr)',iunit)
+call write_inopt(m_apophis_in,'m_apophis_in','mass of apophis (blank uses density-based default, e.g. 6e10 kg)',iunit)
  call write_inopt(asteroids,'asteroids','add distant minor bodies as km-sized dust particles',iunit)
  call write_inopt(np_apophis,'np_apophis','number of particles used to represent apophis (0=none; 1=sink; n=gas)',iunit)
  call write_inopt(epoch,'epoch','epoch to query ephemeris, YYYY-MMM-DD HH:MM:SS.fff, blank = today',iunit)
@@ -293,6 +300,7 @@ subroutine read_setupfile(filename,ierr)
  call open_db_from_file(db,filename,iunit,ierr)
  call read_inopt(tmax_in, 'tmax_in',db,errcount=nerr)
  call read_inopt(dtmax_in,'dtmax_in',db,errcount=nerr)
+call read_inopt(m_apophis_in,'m_apophis_in',db,errcount=nerr)
  call read_inopt(asteroids,'asteroids',db,errcount=nerr)
  call read_inopt(np_apophis,'np_apophis',db,min=0,errcount=nerr)
  call read_inopt(epoch,'epoch',db,errcount=nerr)
