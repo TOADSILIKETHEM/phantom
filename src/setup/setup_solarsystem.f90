@@ -17,10 +17,11 @@ module setup
 !   - dtmax_in   : *time between dumps (e.g. 1 hr)*
 !   - epoch      : *epoch to query ephemeris, YYYY-MMM-DD HH:MM:SS.fff, blank = today*
 !   - np_apophis : *number of particles used to represent apophis (0=none; 1=sink; n=gas)*
+!   - obj_file   : *OBJ mesh file for Apophis shape (blank = sphere)*
 !   - tmax_in    : *end time of simulation (e.g. 3 days)*
 !
 ! :Dependencies: centreofmass, eos_tillotson, infile_utils, io, kernel,
-!   options, part, physcon, setbinary, setsolarsystem, setup_params,
+!   options, part, physcon, read_obj, setbinary, setsolarsystem, setup_params,
 !   spherical, timestep, units
 !
  implicit none
@@ -28,7 +29,8 @@ module setup
 
  integer :: np_apophis
  logical :: asteroids
- character(len=20) :: epoch,tmax_in,dtmax_in
+ character(len=20)  :: epoch,tmax_in,dtmax_in
+ character(len=120) :: obj_file
 
  private
 
@@ -54,6 +56,7 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  use options,       only:ieos
  use setup_params,  only:npart_total
  use infile_utils,  only:get_options
+ use read_obj,      only:read_obj_file,scale_and_centre_obj,point_in_polyhedron
  integer,           intent(in)    :: id
  integer,           intent(inout) :: npart
  integer,           intent(out)   :: npartoftype(:)
@@ -63,10 +66,14 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  real,              intent(inout) :: time
  character(len=20), intent(in)    :: fileprefix
  real,              intent(out)   :: vxyzu(:,:)
- integer :: ierr,i,nerr
+ integer :: ierr,i,nerr,npart_before,ncrop
  !integer :: values(8),year,month,day
  real    :: period,semia,mtot,dx
  real    :: r_apophis,m_apophis,rtidal,spsoundmin
+ real    :: xyz_local(3)
+ real,    allocatable :: verts(:,:)
+ integer, allocatable :: faces(:,:)
+ integer :: nverts_obj,nfaces_obj
 !
 ! default runtime parameters
 !
@@ -74,6 +81,7 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  dtmax_in = '1 yr'
  asteroids = .true.
  np_apophis = 0
+ obj_file = ''
  !call date_and_time(values=values)
  !year = values(1); month = values(2); day = values(3)
  !write(epoch,"(i4.4,'-',i2.2,'-',i2.2)") year,month,day
@@ -158,15 +166,36 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
        !
        ! replace the sink particle with a ball of stuff
        !
+       npart_before = npart
        dx = r_apophis/40.
        call set_sphere('closepacked',id,master,0.,r_apophis,dx,hfact,npart,xyzh,npart_total,&
                        xyz_origin=xyzmh_ptmass(1:3,nptmass),exactN=.true.,np_requested=np_apophis)
+       !
+       ! optionally crop particles to OBJ mesh shape
+       !
+       if (len_trim(obj_file) > 0) then
+          call read_obj_file(trim(obj_file),verts,faces,nverts_obj,nfaces_obj)
+          call scale_and_centre_obj(verts,nverts_obj,r_apophis)
+          ncrop = npart_before
+          do i = npart_before+1, npart
+             xyz_local = xyzh(1:3,i) - xyzmh_ptmass(1:3,nptmass)
+             if (point_in_polyhedron(xyz_local,verts,faces,nverts_obj,nfaces_obj)) then
+                ncrop = ncrop + 1
+                xyzh(:,ncrop) = xyzh(:,i)
+             endif
+          enddo
+          print "(a,i0,a,i0,a)",' OBJ crop: kept ',ncrop-npart_before,&
+                                 ' of ',npart-npart_before,' Apophis particles'
+          npart_total = npart_total - int(npart-ncrop,kind=8)
+          npart = ncrop
+          deallocate(verts,faces)
+       endif
 
-       do i=1,npart
+       do i=npart_before+1,npart
           vxyzu(1:3,i) = vxyz_ptmass(1:3,nptmass)
        enddo
-       massoftype(igas) = m_apophis / npart
-       npartoftype(igas) = npart
+       massoftype(igas) = m_apophis / (npart - npart_before)
+       npartoftype(igas) = npart - npart_before
        nptmass = nptmass - 1
        !
        ! print quantities from the equation of state to give an idea of the timestep
@@ -205,6 +234,7 @@ subroutine write_setupfile(filename)
  call write_inopt(dtmax_in,'dtmax_in','time between dumps (e.g. 1 hr)',iunit)
  call write_inopt(asteroids,'asteroids','add distant minor bodies as km-sized dust particles',iunit)
  call write_inopt(np_apophis,'np_apophis','number of particles used to represent apophis (0=none; 1=sink; n=gas)',iunit)
+ call write_inopt(obj_file,'obj_file','OBJ mesh file for Apophis shape (blank = sphere)',iunit)
  call write_inopt(epoch,'epoch','epoch to query ephemeris, YYYY-MMM-DD HH:MM:SS.fff, blank = today',iunit)
  close(iunit)
 
@@ -231,6 +261,7 @@ subroutine read_setupfile(filename,ierr)
  call read_inopt(dtmax_in,'dtmax_in',db,errcount=nerr)
  call read_inopt(asteroids,'asteroids',db,errcount=nerr)
  call read_inopt(np_apophis,'np_apophis',db,min=0,errcount=nerr)
+ call read_inopt(obj_file,'obj_file',db,errcount=nerr)
  call read_inopt(epoch,'epoch',db,errcount=nerr)
  call close_db(db)
 
