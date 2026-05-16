@@ -21,7 +21,7 @@ module setup
 !   - tmax_in    : *end time of simulation (e.g. 3 days)*
 !
 ! :Dependencies: centreofmass, eos_tillotson, infile_utils, io, kernel,
-!   options, part, physcon, read_obj, setbinary, setsolarsystem, setup_params,
+!   options, part, physcon, ptmass, read_obj, setbinary, setsolarsystem, setup_params,
 !   spherical, timestep, units
 !
  implicit none
@@ -63,6 +63,7 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  use setup_params,  only:npart_total
  use infile_utils,  only:get_options
  use read_obj,      only:read_obj_file,scale_and_centre_obj,point_in_polyhedron
+ use ptmass,        only:isink_potential
  integer,           intent(in)    :: id
  integer,           intent(inout) :: npart
  integer,           intent(out)   :: npartoftype(:)
@@ -229,8 +230,11 @@ m_apophis_in = ''
        npartoftype(igas) = npart - npart_before
        nptmass = nptmass - 1
 
-       if (use_dem) call replace_gas_with_dem(npart,npartoftype(igas),massoftype(igas),&
-                                              xyzh,vxyzu,nptmass,xyzmh_ptmass,vxyz_ptmass,dx)
+       if (use_dem) then
+          call replace_gas_with_dem(npart,npartoftype(igas),massoftype(igas),&
+                                    xyzh,vxyzu,nptmass,xyzmh_ptmass,vxyz_ptmass,dx)
+          isink_potential = 2
+       endif
        !
        ! print quantities from the equation of state to give an idea of the timestep
        !
