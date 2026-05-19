@@ -17,21 +17,20 @@ module setup
 !   - dtmax_in   : *time between dumps (e.g. 1 hr)*
 !   - epoch      : *epoch to query ephemeris, YYYY-MMM-DD HH:MM:SS.fff, blank = today*
 !   - np_apophis : *number of particles used to represent apophis (0=none; 1=sink; n=gas)*
-!   - obj_file   : *OBJ mesh file for Apophis shape (blank = sphere)*
 !   - tmax_in    : *end time of simulation (e.g. 3 days)*
 !
 ! :Dependencies: centreofmass, eos_tillotson, infile_utils, io, kernel,
-!   options, part, physcon, ptmass, read_obj, setbinary, setsolarsystem, setup_params,
+!   options, part, physcon, setbinary, setsolarsystem, setup_params,
 !   spherical, timestep, units
 !
  implicit none
  public :: setpart
 
-integer :: np_apophis
-logical :: asteroids
-character(len=20) :: epoch,tmax_in,dtmax_in,m_apophis_in
- character(len=120) :: obj_file
+ integer :: np_apophis
+ logical :: asteroids
+ character(len=20) :: epoch,tmax_in,dtmax_in
  logical :: use_dem,apophis_only
+character(len=256) :: apophis_shape_file
 
  real :: scale_vel
  real :: scale_pos
@@ -58,11 +57,10 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  use setsolarsystem,only:set_minor_planets,add_sun_and_planets,add_body
  use kernel,        only:hfact_default
  use eos_tillotson, only:rho_0,A
- use spherical,     only:set_sphere
+ use shape,         only:set_shape
  use options,       only:ieos
  use setup_params,  only:npart_total
  use infile_utils,  only:get_options
- use read_obj,      only:read_obj_file,scale_and_centre_obj,point_in_polyhedron
  use ptmass,        only:isink_potential
  integer,           intent(in)    :: id
  integer,           intent(inout) :: npart
@@ -73,21 +71,15 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  real,              intent(inout) :: time
  character(len=20), intent(in)    :: fileprefix
  real,              intent(out)   :: vxyzu(:,:)
-integer :: ierr,i,nerr,ierr_mass,npart_before,ncrop
+ integer :: ierr,i,nerr
  !integer :: values(8),year,month,day
  real    :: period,semia,mtot,dx
  real    :: r_apophis,m_apophis,rtidal,spsoundmin
- real    :: xyz_local(3)
- real,    allocatable :: verts(:,:)
- integer, allocatable :: faces(:,:)
- integer :: nverts_obj,nfaces_obj
 !
 ! default runtime parameters
 !
  tmax_in = '1000 yr'
  dtmax_in = '1 yr'
-m_apophis_in = ''
- obj_file = ''
  asteroids = .true.
  np_apophis = 0
  use_dem = .false.
@@ -100,6 +92,7 @@ m_apophis_in = ''
  scale_pos=1.
  scale_r_apophis=1.
  scale_rho=1.
+ apophis_shape_file='apophis.shape'
 !
 ! read runtime parameters from setup file
 !
@@ -171,12 +164,7 @@ m_apophis_in = ''
     xyzmh_ptmass(5,nptmass) = r_apophis
     print "(a,1pg10.3)",' apophis radius scaled by ',scale_r_apophis
 
-   if (len_trim(m_apophis_in) > 0) then
-      m_apophis = in_code_units(m_apophis_in,ierr_mass,unit_type='mass')
-      if (ierr_mass /= 0) call fatal('setup_solarsystem',' could not parse m_apophis_in')
-   else
-      m_apophis = 4./3.*pi*(rho_0*scale_rho/unit_density)*r_apophis**3
-   endif
+    m_apophis = 4./3.*pi*(rho_0*scale_rho/unit_density)*r_apophis**3
     xyzmh_ptmass(4,nptmass) = m_apophis
     print "(a,2(es10.3,a))",' mass of apophis is ',m_apophis*umass,&
                             ' g or ',m_apophis*umass/ceresm,' ceres masses'
@@ -198,41 +186,21 @@ m_apophis_in = ''
        !
        ! replace the sink particle with a ball of stuff
        !
-       npart_before = npart
-       dx = r_apophis/40.
-       call set_sphere('closepacked',id,master,0.,r_apophis,dx,hfact,npart,xyzh,npart_total,&
-                       xyz_origin=xyzmh_ptmass(1:3,nptmass),exactN=.true.,np_requested=np_apophis)
-       !
-       ! optionally crop particles to OBJ mesh shape
-       !
-       if (len_trim(obj_file) > 0) then
-          call read_obj_file(trim(obj_file),verts,faces,nverts_obj,nfaces_obj)
-          call scale_and_centre_obj(verts,nverts_obj,r_apophis)
-          ncrop = npart_before
-          do i = npart_before+1, npart
-             xyz_local = xyzh(1:3,i) - xyzmh_ptmass(1:3,nptmass)
-             if (point_in_polyhedron(xyz_local,verts,faces,nverts_obj,nfaces_obj)) then
-                ncrop = ncrop + 1
-                xyzh(:,ncrop) = xyzh(:,i)
-             endif
-          enddo
-          print "(a,i0,a,i0,a)",' OBJ crop: kept ',ncrop-npart_before,&
-                                 ' of ',npart-npart_before,' Apophis particles'
-          npart_total = npart_total - int(npart-ncrop,kind=8)
-          npart = ncrop
-          deallocate(verts,faces)
-       endif
+       call set_shape('closepacked',id,master,np_apophis,xyzmh_ptmass(1:3,nptmass),r_apophis,&
+                      hfact,npart,xyzh,npart_total,objfile=apophis_shape_file)
+       !call set_sphere('closepacked',id,master,0.,r_apophis,dx,hfact,npart,xyzh,npart_total,&
+       !                xyz_origin=xyzmh_ptmass(1:3,nptmass),exactN=.true.,np_requested=np_apophis)
 
-       do i=npart_before+1,npart
+       do i=1,npart
           vxyzu(1:3,i) = vxyz_ptmass(1:3,nptmass)
        enddo
-       massoftype(igas) = m_apophis / (npart - npart_before)
-       npartoftype(igas) = npart - npart_before
+       massoftype(igas) = m_apophis / npart
+       npartoftype(igas) = npart
        nptmass = nptmass - 1
 
        if (use_dem) then
-          call replace_gas_with_dem(npart,npartoftype(igas),massoftype(igas),&
-                                    xyzh,vxyzu,nptmass,xyzmh_ptmass,vxyz_ptmass,dx)
+          call replace_gas_with_dem(id,npart,npartoftype(igas),massoftype(igas),&
+                                    xyzh,vxyzu,nptmass,xyzmh_ptmass,vxyz_ptmass,hfact)
           isink_potential = 2
        endif
        !
@@ -259,13 +227,66 @@ end subroutine setpart
 !  replace gas with discrete element method particles
 !+
 !----------------------------------------------------------------
-subroutine replace_gas_with_dem(npart,ngas,pmass,xyzh,vxyzu,nptmass,xyzmh_ptmass,vxyz_ptmass,dx)
- use part, only:iReff
+subroutine replace_gas_with_dem(id,npart,ngas,pmass,xyzh,vxyzu,nptmass,xyzmh_ptmass,vxyz_ptmass,hfact)
+ use part, only:iReff,ihacc
+ use units, only:udist
+ use physcon, only:km
+ use io, only:master
+ integer, intent(in)    :: id
  integer, intent(inout) :: npart,ngas,nptmass
  real, intent(inout) :: pmass,xyzh(:,:),vxyzu(:,:)
  real, intent(inout) :: xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
- real, intent(in) :: dx
- integer :: i
+ real, intent(in)    :: hfact
+ integer :: i,j
+ real :: dxij,dyij,dzij,dmin,reff,sep(npart)
+ real :: sep_med,sep_min,sep_max
+
+ if (npart < 1) return
+
+ !
+ ! DEM sphere radius from cropped lattice geometry (not r_apophis/40).
+ ! Use per-particle Reff = 0.5*nearest-neighbour distance so ellipsoid/mesh
+ ! surfaces do not share one radius (median) that overlaps close pairs on step 1.
+ !
+ sep_med = 0.
+ sep_min = huge(sep_min)
+ sep_max = 0.
+ if (npart == 1) then
+    sep(1) = xyzh(4,1)/hfact
+ else
+    do i=1,npart
+       dmin = huge(dmin)
+       do j=1,npart
+          if (j == i) cycle
+          dxij = xyzh(1,i) - xyzh(1,j)
+          dyij = xyzh(2,i) - xyzh(2,j)
+          dzij = xyzh(3,i) - xyzh(3,j)
+          dmin = min(dmin,sqrt(dxij*dxij + dyij*dyij + dzij*dzij))
+       enddo
+       sep(i) = dmin
+       sep_min = min(sep_min,dmin)
+       sep_max = max(sep_max,dmin)
+    enddo
+    do i=2,npart
+       dmin = sep(i)
+       j = i - 1
+       do while (j >= 1 .and. sep(j) > dmin)
+          sep(j+1) = sep(j)
+          j = j - 1
+       enddo
+       sep(j+1) = dmin
+    enddo
+    if (mod(npart,2) == 1) then
+       sep_med = sep((npart+1)/2)
+    else
+       sep_med = 0.5*(sep(npart/2) + sep(npart/2+1))
+    endif
+ endif
+
+ if (id == master) then
+    print "(a,1pg12.4,a)",' DEM NN spacing (min/median/max) = ',sep_min*udist/km,&
+          ' / ',sep_med*udist/km,' / ',sep_max*udist/km,' km'
+ endif
 
  xyzmh_ptmass(:,nptmass+1:) = 0.
  do i=1,npart
@@ -273,14 +294,16 @@ subroutine replace_gas_with_dem(npart,ngas,pmass,xyzh,vxyzu,nptmass,xyzmh_ptmass
     vxyz_ptmass(1:3,nptmass) = vxyzu(1:3,i)
     xyzmh_ptmass(1:3,nptmass) = xyzh(1:3,i)
     xyzmh_ptmass(4,nptmass) = pmass
-    xyzmh_ptmass(iReff,nptmass) = 0.5*dx*sqrt(2.)**(1./3.)
-    xyzmh_ptmass(5,nptmass) = xyzmh_ptmass(iReff,nptmass)/10.
+    reff = 0.5*sep(i)
+    xyzmh_ptmass(iReff,nptmass) = reff
+    xyzmh_ptmass(ihacc,nptmass) = reff
  enddo
  npart = 0
  ngas = 0
  pmass = 0.
 
 end subroutine replace_gas_with_dem
+
 !----------------------------------------------------------------
 !+
 !  write setup parameters to file
@@ -297,10 +320,8 @@ subroutine write_setupfile(filename)
  write(iunit,"(a)") '# input file for solar system setup routines'
  call write_inopt(tmax_in,'tmax_in','end time of simulation (e.g. 3 days)',iunit)
  call write_inopt(dtmax_in,'dtmax_in','time between dumps (e.g. 1 hr)',iunit)
-call write_inopt(m_apophis_in,'m_apophis_in','mass of apophis (blank uses density-based default, e.g. 6e10 kg)',iunit)
  call write_inopt(asteroids,'asteroids','add distant minor bodies as km-sized dust particles',iunit)
  call write_inopt(np_apophis,'np_apophis','number of particles used to represent apophis (0=none; 1=sink; n=gas)',iunit)
- call write_inopt(obj_file,'obj_file','OBJ mesh file for Apophis shape (blank = sphere)',iunit)
  call write_inopt(epoch,'epoch','epoch to query ephemeris, YYYY-MMM-DD HH:MM:SS.fff, blank = today',iunit)
 
  call write_inopt(use_dem,'use_dem','use the discrete element method for sink-sink interactions',iunit)
@@ -310,6 +331,7 @@ call write_inopt(m_apophis_in,'m_apophis_in','mass of apophis (blank uses densit
  call write_inopt(scale_pos,'scale_pos','scaling factor for apophis initial position',iunit)
  call write_inopt(scale_r_apophis,'scale_r_apophis','scaling factor for apophis radius',iunit)
  call write_inopt(scale_rho,'scale_rho','scaling factor for apophis bulk density',iunit)
+call write_inopt(apophis_shape_file,'apophis_shape_file','shape config file for lattice cropping',iunit)
 
  close(iunit)
 
@@ -334,10 +356,8 @@ subroutine read_setupfile(filename,ierr)
  call open_db_from_file(db,filename,iunit,ierr)
  call read_inopt(tmax_in, 'tmax_in',db,errcount=nerr)
  call read_inopt(dtmax_in,'dtmax_in',db,errcount=nerr)
-call read_inopt(m_apophis_in,'m_apophis_in',db,errcount=nerr)
  call read_inopt(asteroids,'asteroids',db,errcount=nerr)
  call read_inopt(np_apophis,'np_apophis',db,min=0,errcount=nerr)
- call read_inopt(obj_file,'obj_file',db,errcount=nerr)
  call read_inopt(epoch,'epoch',db,errcount=nerr)
 
  call read_inopt(use_dem,'use_dem',db,errcount=nerr)
@@ -347,6 +367,7 @@ call read_inopt(m_apophis_in,'m_apophis_in',db,errcount=nerr)
  call read_inopt(scale_pos,'scale_pos',db,default=1.0,errcount=nerr)
  call read_inopt(scale_r_apophis,'scale_r_apophis',db,default=1.0,errcount=nerr)
  call read_inopt(scale_rho,'scale_rho',db,default=1.0,errcount=nerr)
+call read_inopt(apophis_shape_file,'apophis_shape_file',db,default='apophis.shape',errcount=nerr)
 
  call close_db(db)
 
