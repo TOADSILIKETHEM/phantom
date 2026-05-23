@@ -218,6 +218,7 @@ module part
  integer, parameter :: itbirth  = 22 ! birth time of the new sink
  integer, parameter :: ivwind   = 23 ! wind velocity
  integer, parameter :: iTwind   = 24 ! wind temperature
+ integer, parameter :: iwalpha  = 30 ! alpha wind parameter
  integer, parameter :: ieject   = 25 ! number of ejected particles per sphere
  integer, parameter :: isftype  = 26 ! type of the sink (1: sink,2: star, 3:dead)
  integer, parameter :: inseed   = 27 ! number of seeds into a sink (icreate_sinks == 2)
@@ -239,7 +240,7 @@ module part
     'tlast    ','lum      ','Teff     ','Reff     ','mdotloss ',&
     'mdotav   ','mprev    ','massenc  ','J2       ','Rstrom   ',&
     'rate_ion ','tbirth   ','vwind    ','Twind    ','ieject   ',&
-    'sftype   ','nseed    ','Rbondi   ','Pr_Bondi '/)
+    'sftype   ','nseed    ','Rbondi   ','Pr_Bondi ','alpha    '/)
  character(len=*), parameter :: vxyz_ptmass_label(3) = (/'vx','vy','vz'/)
 !
 !--self-gravity
@@ -348,7 +349,7 @@ module part
  !
 !-- Regularisation algorithm allocation
 !
- logical, allocatable :: isionised(:)
+ integer, allocatable :: noverlap(:)
 !
 !--derivatives (only needed if derivs is called)
 !
@@ -545,7 +546,7 @@ subroutine allocate_part
  call allocate_array("nmatrix", nmatrix, maxptmass, maxptmass)
  call allocate_array("shortsinktree", shortsinktree, maxptmass, maxptmass)
  call allocate_array("gtgrad", gtgrad, 3, maxptmass)
- call allocate_array('isionised', isionised, maxp)
+ call allocate_array('noverlap', noverlap, maxp)
 
 end subroutine allocate_part
 
@@ -634,7 +635,7 @@ subroutine deallocate_part
  if (allocated(nmatrix))      deallocate(nmatrix)
  if (allocated(shortsinktree))deallocate(shortsinktree)
  if (allocated(gtgrad))       deallocate(gtgrad)
- if (allocated(isionised))    deallocate(isionised)
+ if (allocated(noverlap))     deallocate(noverlap)
 
 end subroutine deallocate_part
 
@@ -652,7 +653,6 @@ subroutine init_part
  npartoftype(:) = 0
  npartoftypetot(:) = 0
  massoftype(:)  = 0.
- isionised(:) = .false.
 !--initialise point mass arrays to zero
  xyzmh_ptmass = 0.
  vxyz_ptmass  = 0.

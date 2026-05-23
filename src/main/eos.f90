@@ -25,7 +25,6 @@ module eos
 !    14 = locally isothermal prescription from Farris et al. (2014) for binary system
 !    15 = Helmholtz free energy eos
 !    16 = Shen eos
-!    17 = polytropic EOS with varying mu (depending on H2 formation)
 !    20 = Ideal gas + radiation + various forms of recombination energy from HORMONE (Hirai et al., 2020)
 !    23 = Hypervelocity Impact of solids-fluids from Tillotson EOS (Tillotson 1962 - implemented by Brundage A. 2013
 !    24 = read tabulated eos (for use with icooling == 9)
@@ -66,8 +65,8 @@ module eos
 
  public  :: equationofstate,setpolyk,eosinfo,get_mean_molecular_weight
  public  :: get_TempPresCs,get_spsound,get_temperature,get_pressure,get_cv
- public  :: eos_is_non_ideal,eos_outputs_mu,eos_outputs_gasP
- public  :: get_local_u_internal,get_temperature_from_u
+ public  :: eos_is_non_ideal,eos_outputs_mu,eos_outputs_gamma,eos_outputs_gasP
+ public  :: eos_outputs_temp,get_local_u_internal,get_temperature_from_u
  public  :: calc_temp_and_ene,entropy,get_rho_from_p_s,get_u_from_rhoT
  public  :: calc_rho_from_PT,get_entropy,get_p_from_rho_s
  public  :: init_eos,finish_eos
@@ -123,7 +122,7 @@ contains
 !  (and position in the case of the isothermal disc)
 !+
 !----------------------------------------------------------------
-subroutine equationofstate(eos_type,ponrhoi,spsoundi,rhoi,xi,yi,zi,tempi,eni,gamma_local,mu_local,Xlocal,Zlocal,radxi,isionised)
+subroutine equationofstate(eos_type,ponrhoi,spsoundi,rhoi,xi,yi,zi,tempi,eni,gamma_local,mu_local,Xlocal,Zlocal,radxi)
  use io,            only:fatal,error,warning
  use part,          only:xyzmh_ptmass, nptmass
  use units,         only:unit_density,unit_pressure,unit_ergg,unit_velocity
@@ -146,7 +145,6 @@ subroutine equationofstate(eos_type,ponrhoi,spsoundi,rhoi,xi,yi,zi,tempi,eni,gam
  real,    intent(in),    optional :: eni
  real,    intent(inout), optional :: mu_local,gamma_local
  real,    intent(in),    optional :: Xlocal,Zlocal,radxi
- logical, intent(in),    optional :: isionised
  integer :: ierr, i
  real    :: r1,r2
  real    :: mass_r, mass ! defined for generalised Farris prescription
@@ -154,7 +152,6 @@ subroutine equationofstate(eos_type,ponrhoi,spsoundi,rhoi,xi,yi,zi,tempi,eni,gam
  real    :: cgsrhoi,cgseni,cgspresi,presi,gam1,cgsspsoundi
  real    :: uthermconst,kappaBar,kappaPart
  real    :: enthi,pondensi
- logical :: isionisedi
  !
  ! Check to see if equation of state is compatible with GR cons2prim routines
  !
@@ -172,7 +169,6 @@ subroutine equationofstate(eos_type,ponrhoi,spsoundi,rhoi,xi,yi,zi,tempi,eni,gam
  if (present(mu_local)) mui = mu_local
  if (present(Xlocal)) X_i = Xlocal
  if (present(Zlocal)) Z_i = Zlocal
- if (present(isionised)) isionisedi = isionised
 
  select case(eos_type)
  case(1)
@@ -187,7 +183,7 @@ subroutine equationofstate(eos_type,ponrhoi,spsoundi,rhoi,xi,yi,zi,tempi,eni,gam
     spsoundi = sqrt(ponrhoi)
     tempi    = temperature_coef*mui*ponrhoi
 
- case(2,5,17)
+ case(2,5)
 !
 !--Adiabatic equation of state (code default)
 !
@@ -468,14 +464,16 @@ subroutine equationofstate(eos_type,ponrhoi,spsoundi,rhoi,xi,yi,zi,tempi,eni,gam
 !  flips the temperature depending on whether a particle is ionised or not,
 !  use with ISOTHERMAL=yes
 !
-    call get_eos_HIIR_iso(polyk,temperature_coef,mui,tempi,ponrhoi,spsoundi,isionisedi)
+    call get_eos_HIIR_iso(polyk,temperature_coef,mui,tempi,ponrhoi,spsoundi)
+
  case(22)
 !
-!--Same as ieos=21 but sets the thermal energy
+!--HII region two temperature "equation of state"
 !
-!  for use when u is stored (ISOTHERMAL=no)
+!  flips the temperature depending on whether a particle is ionised or not,
+!  use with ISOTHERMAL=no
 !
-    call get_eos_HIIR_adiab(polyk,temperature_coef,mui,tempi,ponrhoi,rhoi,eni,gammai,spsoundi,isionisedi)
+    call get_eos_HIIR_adiab(polyk,temperature_coef,mui,tempi,ponrhoi,rhoi,eni,gammai,spsoundi)
  case(23)
 !
 !--Tillotson (1962) equation of state for solids (basalt, granite, ice, etc.)
@@ -595,6 +593,9 @@ subroutine init_eos(eos_type,ierr)
     if (do_radiation .and. ierr==0) then
        call error('eos','ieos=10, cannot use eos with radiation, will double count radiation pressure')
        ierr=ierr_option_conflict !return error if using radiation and mesa EOS, shouldn't use mesa eos, as it will double count rad pres
+    elseif (use_var_comp) then
+       call error('eos','ieos=10, variable composition not supported from MESA EoS')
+       ierr=ierr_option_conflict ! can only read EoS table for fixed composition at the moment
     endif
 
  case(12)
@@ -624,7 +625,7 @@ subroutine init_eos(eos_type,ierr)
 
  case(21,22)
 
-    call init_eos_HIIR()
+    call init_eos_HIIR(gamma,polyk,gmw,temperature_coef,ierr)
 
  case(23)
     call init_eos_tillotson(ierr)
@@ -908,7 +909,7 @@ end function get_u_from_rhoT
 !  pressure and density. Inputs and outputs are in cgs units.
 !
 !  Note on composition:
-!  For ieos=2, 5, 12 and 17, mu_local is an input, X & Z are not used
+!  For ieos=2, 5 and 12, mu_local is an input, X & Z are not used
 !  For ieos=10, mu_local is not used
 !  For ieos=20, mu_local is not used but available as an output
 !+
@@ -942,7 +943,7 @@ subroutine calc_temp_and_ene(eos_type,rho,pres,ene,temp,ierr,guesseint,mu_local,
     do_radiation_local = do_radiation
  endif
  select case(eos_type)
- case(2,5,17) ! Ideal gas
+ case(2,5) ! Ideal gas
     temp = pres / (rho * Rg) * mu
     ene = pres / ( (gamma-1.) * rho)
  case(12) ! Ideal gas + radiation
@@ -968,7 +969,7 @@ end subroutine calc_temp_and_ene
 !  are in cgs units.
 !
 !  Note on composition:
-!  For ieos=2, 5, 12 and 17, mu_local is an input, X & Z are not used
+!  For ieos=2, 5 and 12, mu_local is an input, X & Z are not used
 !  For ieos=10, mu_local is not used
 !  For ieos=20, mu_local is not used but available as an output
 !+
@@ -1155,7 +1156,7 @@ subroutine get_p_from_rho_s(ieos,S,rho,mu,P,temp)
 
  niter = 0
  select case (ieos)
- case (2,5,17)
+ case (2,5)
     temp = (cgsrho * exp(mu*cgss*mass_proton_cgs))**(2./3.)
     cgsP = cgsrho*Rg*temp / mu
  case (12)
@@ -1286,7 +1287,7 @@ subroutine setpolyk(eos_type,iprint,utherm,xyzhi,npart)
        write(iprint,*) 'WARNING! different utherms but run is isothermal'
     endif
 
- case(2,5,17)
+ case(2,5,22)
 !
 !--adiabatic/polytropic eos
 !  this routine is ONLY called if utherm is NOT stored, so polyk matters
@@ -1393,6 +1394,23 @@ end function eos_outputs_mu
 
 !-----------------------------------------------------------------------
 !+
+!  Query function to return whether an EoS outputs the adiabatic index
+!+
+!-----------------------------------------------------------------------
+logical function eos_outputs_gamma(ieos)
+ integer, intent(in) :: ieos
+
+ select case(ieos)
+ case(5,10,20)
+    eos_outputs_gamma = .true.
+ case default
+    eos_outputs_gamma = .false.
+ end select
+
+end function eos_outputs_gamma
+
+!-----------------------------------------------------------------------
+!+
 !  Query function to whether to print pressure to dump file
 !+
 !-----------------------------------------------------------------------
@@ -1410,6 +1428,23 @@ end function eos_outputs_gasP
 
 !-----------------------------------------------------------------------
 !+
+!  Query function to whether to print temperature to dump file
+!+
+!-----------------------------------------------------------------------
+logical function eos_outputs_temp(ieos)
+ integer, intent(in) :: ieos
+
+ select case(ieos)
+ case(21,22)
+    eos_outputs_temp = .true.
+ case default
+    eos_outputs_temp = eos_is_non_ideal(ieos)
+ end select
+
+end function eos_outputs_temp
+
+!-----------------------------------------------------------------------
+!+
 !  Query function for whether the equation of state requires
 !  the code to be compiled without a thermal energy variable
 !+
@@ -1421,7 +1456,7 @@ logical function eos_requires_isothermal(ieos)
  case(1,3,6,7,8,13,14,21)
     eos_requires_isothermal = .true.
  case default
-    !case(2,5,4,10,11,12,15,16,17,20,22,23,24,9)
+    !case(2,5,4,10,11,12,15,16,20,22,23,24,9)
     eos_requires_isothermal = .false.
  end select
 
@@ -1437,7 +1472,7 @@ logical function eos_allows_shock_and_work(ieos)
  integer, intent(in) :: ieos
 
  select case(ieos)
- case(2,5,10,12,15,16,17,21,22,24)
+ case(2,5,10,12,15,16,21,22,24)
     eos_allows_shock_and_work = .true.
  case default
     eos_allows_shock_and_work = .false.
@@ -1481,7 +1516,7 @@ logical function eos_is_not_implemented(ieos)
  integer, intent(in) :: ieos
 
  select case(ieos)
- case(18,19)
+ case(17,18,19)
     eos_is_not_implemented = .true.
  case default
     eos_is_not_implemented = .false.
@@ -1524,11 +1559,11 @@ subroutine eosinfo(eos_type,iprint)
     endif
  case(3)
     write(iprint,"(/,a,f10.6,a,f10.6)") ' Locally isothermal eq of state (R_sph): cs^2_0 = ',polyk,' qfac = ',qfacdisc
- case(5,17)
+ case(5)
     if (maxvxyzu >= 4) then
        write(iprint,"(' Adiabatic equation of state: P = (gamma-1)*rho*u, where gamma & mu depend on the formation of H2')")
     else
-       write(iprint,*) 'ERROR: eos = 5,17 cannot assume isothermal conditions'
+       write(iprint,*) 'ERROR: eos = 5 cannot assume isothermal conditions'
     endif
  case(6)
     write(iprint,"(/,a,i2,a,f10.6,a,f10.6)") ' Locally (on sink ',isink, &
@@ -1724,7 +1759,7 @@ subroutine read_options_eos(db,nerr)
  character(len=*), parameter  :: label = 'read_infile'
 
  call read_inopt(ieos,'ieos',db,errcount=nerr,min=1,max=maxeos)
- if (ieos == 5 .or. ieos == 17) then
+ if (ieos == 5) then
     store_dust_temperature = .true.
     update_muGamma = .true.
  endif
