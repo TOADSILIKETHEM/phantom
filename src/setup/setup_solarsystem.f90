@@ -152,7 +152,11 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  call add_sun_and_planets(nptmass,xyzmh_ptmass,vxyz_ptmass,mtot,nerr,epoch)
  if (nerr > 0) ierr = ierr + nerr
 
- if (apophis_only) nptmass = 0
+ if (apophis_only) then
+    xyzmh_ptmass(:,1:nptmass) = 0.
+    vxyz_ptmass(:,1:nptmass) = 0.
+    nptmass = 0
+ endif
  !
  ! add the bringer of death
  !
