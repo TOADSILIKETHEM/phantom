@@ -37,6 +37,12 @@ character(len=256) :: apophis_shape_file
  real :: scale_r_apophis
  real :: scale_rho
 
+ ! Spin parameters: applied after DEM particles are placed (period=0 → no spin).
+ ! Spin is DEM-only; single-sink runs are unaffected.
+ real :: apophis_spin_period    ! rotation period in hours (0 = no spin)
+ real :: apophis_spin_obliquity ! obliquity of spin axis from ecliptic north (degrees)
+ real :: apophis_spin_azimuth   ! azimuth of spin axis in ecliptic plane (degrees)
+
  private
 
 contains
@@ -71,7 +77,7 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  real,              intent(inout) :: time
  character(len=20), intent(in)    :: fileprefix
  real,              intent(out)   :: vxyzu(:,:)
- integer :: ierr,i,nerr
+ integer :: ierr,i,nerr,nptmass_dem_start
  !integer :: values(8),year,month,day
  real    :: period,semia,mtot,dx
  real    :: r_apophis,m_apophis,rtidal,spsoundmin
@@ -93,6 +99,9 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  scale_r_apophis=1.
  scale_rho=1.
  apophis_shape_file='apophis.shape'
+ apophis_spin_period    = 0.
+ apophis_spin_obliquity = 0.
+ apophis_spin_azimuth   = 0.
 !
 ! read runtime parameters from setup file
 !
@@ -203,9 +212,19 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
        nptmass = nptmass - 1
 
        if (use_dem) then
+          ! Record how many sinks exist before DEM replacement so we know which
+          ! indices are the new Apophis rubble-pile particles afterward.
+          nptmass_dem_start = nptmass
           call replace_gas_with_dem(id,npart,npartoftype(igas),massoftype(igas),&
                                     xyzh,vxyzu,nptmass,xyzmh_ptmass,vxyz_ptmass,hfact)
           isink_potential = 2
+          ! Apply rigid-body spin after particles are placed (period=0 → skipped).
+          if (apophis_spin_period > 0.) then
+             call apply_apophis_spin(nptmass_dem_start+1,nptmass,&
+                                     xyzmh_ptmass,vxyz_ptmass,&
+                                     apophis_spin_period,apophis_spin_obliquity,&
+                                     apophis_spin_azimuth,utime)
+          endif
        endif
        !
        ! print quantities from the equation of state to give an idea of the timestep
@@ -310,6 +329,63 @@ end subroutine replace_gas_with_dem
 
 !----------------------------------------------------------------
 !+
+!  Apply rigid-body spin to DEM sink particles after placement.
+!  Computes the angular velocity from the requested spin period,
+!  then adds v_spin = omega_vec x (r_i - r_cm) to each particle so
+!  the rubble pile enters the simulation already rotating.
+!  No-op when period_hr <= 0 or the index range is empty.
+!+
+!----------------------------------------------------------------
+subroutine apply_apophis_spin(i_start,i_end,xyzmh_ptmass,vxyz_ptmass,&
+                               period_hr,obliquity_deg,azimuth_deg,utime)
+ use physcon, only:pi
+ integer, intent(in)    :: i_start,i_end
+ real,    intent(inout) :: xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
+ real,    intent(in)    :: period_hr,obliquity_deg,azimuth_deg,utime
+ integer :: i,n
+ real    :: obl_rad,az_rad,omega,nx,ny,nz
+ real    :: rcm(3),dr(3),v_spin(3)
+
+ n = i_end - i_start + 1
+ if (n < 1 .or. period_hr <= 0.) return
+
+ obl_rad = obliquity_deg * pi / 180.
+ az_rad  = azimuth_deg   * pi / 180.
+
+ ! Angular velocity in code units: omega = 2*pi / T, T = period_hr * 3600 s / utime
+ omega = 2.*pi / (period_hr * 3600. / utime)
+
+ ! Spin axis unit vector from obliquity and azimuth
+ nx = sin(obl_rad) * cos(az_rad)
+ ny = sin(obl_rad) * sin(az_rad)
+ nz = cos(obl_rad)
+
+ ! Centre of mass of DEM particles
+ rcm = 0.
+ do i = i_start, i_end
+    rcm(1:3) = rcm(1:3) + xyzmh_ptmass(1:3,i)
+ enddo
+ rcm = rcm / real(n)
+
+ ! Add omega_vec x (r_i - r_cm) to each particle's translational velocity
+ do i = i_start, i_end
+    dr(1) = xyzmh_ptmass(1,i) - rcm(1)
+    dr(2) = xyzmh_ptmass(2,i) - rcm(2)
+    dr(3) = xyzmh_ptmass(3,i) - rcm(3)
+    v_spin(1) = omega * (ny*dr(3) - nz*dr(2))
+    v_spin(2) = omega * (nz*dr(1) - nx*dr(3))
+    v_spin(3) = omega * (nx*dr(2) - ny*dr(1))
+    vxyz_ptmass(1:3,i) = vxyz_ptmass(1:3,i) + v_spin(1:3)
+ enddo
+
+ print "(a,1pg10.3,a)",' Apophis spin period    = ',period_hr,' hr'
+ print "(a,3(1pg10.3,1x))",' Apophis spin axis (nx,ny,nz) = ',nx,ny,nz
+ print "(a,1pg10.3,a)",' Apophis spin omega     = ',omega/utime,' rad/s'
+
+end subroutine apply_apophis_spin
+
+!----------------------------------------------------------------
+!+
 !  write setup parameters to file
 !+
 !----------------------------------------------------------------
@@ -336,6 +412,9 @@ subroutine write_setupfile(filename)
  call write_inopt(scale_r_apophis,'scale_r_apophis','scaling factor for apophis radius',iunit)
  call write_inopt(scale_rho,'scale_rho','scaling factor for apophis bulk density',iunit)
 call write_inopt(apophis_shape_file,'apophis_shape_file','shape config file for lattice cropping',iunit)
+ call write_inopt(apophis_spin_period,   'apophis_spin_period',   'Apophis spin period in hours (0 = no spin, DEM only)',iunit)
+ call write_inopt(apophis_spin_obliquity,'apophis_spin_obliquity','obliquity of spin axis from ecliptic north (degrees)',iunit)
+ call write_inopt(apophis_spin_azimuth,  'apophis_spin_azimuth',  'azimuth of spin axis in ecliptic plane (degrees)',iunit)
 
  close(iunit)
 
@@ -372,6 +451,9 @@ subroutine read_setupfile(filename,ierr)
  call read_inopt(scale_r_apophis,'scale_r_apophis',db,default=1.0,errcount=nerr)
  call read_inopt(scale_rho,'scale_rho',db,default=1.0,errcount=nerr)
 call read_inopt(apophis_shape_file,'apophis_shape_file',db,default='apophis.shape',errcount=nerr)
+ call read_inopt(apophis_spin_period,   'apophis_spin_period',   db,default=0.0,errcount=nerr)
+ call read_inopt(apophis_spin_obliquity,'apophis_spin_obliquity',db,default=0.0,errcount=nerr)
+ call read_inopt(apophis_spin_azimuth,  'apophis_spin_azimuth',  db,default=0.0,errcount=nerr)
 
  call close_db(db)
 
