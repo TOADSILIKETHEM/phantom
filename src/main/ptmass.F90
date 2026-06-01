@@ -2570,7 +2570,7 @@ subroutine write_options_ptmass(iunit)
  use infile_utils, only:write_inopt
  use subgroup,     only:r_neigh
  use dim,          only:use_sinktree
- use dem,          only:kn_cgs,epsilon_n_dem,ct_dem
+ use dem,          only:kn_cgs,epsilon_n_dem,ct_dem,kc_cgs,dn_cohes_factor
  integer, intent(in) :: iunit
 
  write(iunit,"(/,a)") '# options controlling sink particles'
@@ -2579,6 +2579,8 @@ subroutine write_options_ptmass(iunit)
     call write_inopt(kn_cgs,'kn_cgs','DEM normal spring constant (dyne/cm)',iunit)
     call write_inopt(epsilon_n_dem,'epsilon_n_dem','DEM normal coefficient of restitution [0=inelastic,1=elastic]',iunit)
     call write_inopt(ct_dem,'ct_dem','DEM tangential damping coefficient',iunit)
+    call write_inopt(kc_cgs,'kc_cgs','DEM cohesive spring constant (dyne/cm); 0=no cohesion',iunit)
+    call write_inopt(dn_cohes_factor,'dn_cohes_factor','DEM cohesion range as fraction of combined radii',iunit)
  endif
  if (gravity) then
     call write_inopt(icreate_sinks,'icreate_sinks','allow automatic sink particle creation',iunit)
@@ -2627,7 +2629,7 @@ subroutine read_options_ptmass(db,nerr)
  use subgroup,     only:r_neigh
  use dim,          only:use_sinktree
  use infile_utils, only:inopts,read_inopt
- use dem,          only:kn_cgs,epsilon_n_dem,ct_dem
+ use dem,          only:kn_cgs,epsilon_n_dem,ct_dem,kc_cgs,dn_cohes_factor
  type(inopts), intent(inout) :: db(:)
  integer,      intent(inout) :: nerr
  character(len=*), parameter :: label = 'read_infile'
@@ -2637,6 +2639,8 @@ subroutine read_options_ptmass(db,nerr)
  call read_inopt(kn_cgs,'kn_cgs',db,errcount=nerr,min=0.,default=kn_cgs)
  call read_inopt(epsilon_n_dem,'epsilon_n_dem',db,errcount=nerr,min=0.,max=1.,default=epsilon_n_dem)
  call read_inopt(ct_dem,'ct_dem',db,errcount=nerr,min=0.,default=ct_dem)
+ call read_inopt(kc_cgs,'kc_cgs',db,errcount=nerr,min=0.,default=kc_cgs)
+ call read_inopt(dn_cohes_factor,'dn_cohes_factor',db,errcount=nerr,min=0.,default=dn_cohes_factor)
  call read_inopt(rho_crit_cgs,'rho_crit_cgs',db,errcount=nerr,min=0.,default=rho_crit_cgs)
  call read_inopt(r_crit,'r_crit',db,errcount=nerr,min=0.,default=r_crit)
  call read_inopt(h_acc,'h_acc',db,errcount=nerr,min=0.,default=h_acc)
