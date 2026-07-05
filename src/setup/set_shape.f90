@@ -29,7 +29,7 @@ module shape
 
 contains
 
-subroutine set_shape(lattice,id,master,np_requested,x0,rmax,hfact,np,xyzh,nptot,objfile)
+subroutine set_shape(lattice,id,master,np_requested,x0,rmax,hfact,np,xyzh,nptot,objfile,shape_kind_out)
  character(len=*), intent(in)    :: lattice
  integer,          intent(in)    :: id,master
  integer,          intent(in)    :: np_requested
@@ -38,6 +38,7 @@ subroutine set_shape(lattice,id,master,np_requested,x0,rmax,hfact,np,xyzh,nptot,
  real,             intent(out)   :: xyzh(:,:)
  integer(kind=8),  intent(inout) :: nptot
  character(len=*), intent(in)    :: objfile
+ character(len=32),intent(out), optional :: shape_kind_out
  integer :: i,iter,np_try,np_keep,ncube
  real    :: xmin,xmax,ymin,ymax,zmin,zmax,delta,ratio
  character(len=32) :: shape_kind
@@ -103,6 +104,8 @@ subroutine set_shape(lattice,id,master,np_requested,x0,rmax,hfact,np,xyzh,nptot,
     write(*,"(1x,a,1x,i9,a,i9)") 'particles kept:',np,' (target ',np_requested,')'
     write(*,"(1x,a,3(es10.3,1x))") 'shifting origin to ',x0(:)
  endif
+
+ if (present(shape_kind_out)) shape_kind_out = shape_kind
 
  do i=1,np
     xyzh(1,i) = xyzh(1,i) + x0(1)
