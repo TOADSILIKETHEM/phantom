@@ -19,7 +19,7 @@ module vectorutils
 !
  implicit none
  public :: minmaxave,cross_product,cross_product3D,curl3D_epsijk,det
- public :: matrixinvert3D,rotatevec,unitvec,mag,make_perp_frame
+ public :: matrixinvert3D,rotatevec,unitvec,mag,make_perp_frame,jacobi_eigen_sym
 
  private
 
@@ -231,5 +231,111 @@ pure subroutine make_perp_frame(a, b, c)
  ! c = a x b
  call cross_product3D(aa, b, c)
 end subroutine make_perp_frame
+
+!----------------------------------------------------------------
+!+
+!  Eigenvalues and eigenvectors of a real symmetric matrix via the
+!  classical Jacobi rotation method with threshold pivoting. Same
+!  algorithm already used privately in src/utils/analysis_NSmerger.f90
+!  (Numerical Recipes, Press et al.), exposed here as a shared public
+!  utility. On output, elements of a above the diagonal are destroyed.
+!  d returns the eigenvalues (unordered); v's columns are the matching
+!  unit eigenvectors. nrot is the number of rotations used (informational).
+!  Source: Numerical Recipes in Fortran 77, section 11.1.
+!+
+!----------------------------------------------------------------
+subroutine jacobi_eigen_sym(a,n,np,d,v,nrot)
+ integer, intent(in)    :: n,np
+ integer, intent(out)   :: nrot
+ real,    intent(inout) :: a(np,np)
+ real,    intent(out)   :: d(np),v(np,np)
+ integer, parameter :: nmax = 500
+ integer :: i,ip,iq,j
+ real :: c,g,h,s,sm,t,tau,theta,tresh,b(nmax),z(nmax)
+
+ do ip=1,n
+    do iq=1,n
+       v(ip,iq) = 0.
+    enddo
+    v(ip,ip) = 1.
+ enddo
+ do ip=1,n
+    b(ip) = a(ip,ip)
+    d(ip) = b(ip)
+    z(ip) = 0.
+ enddo
+
+ nrot = 0
+ do i=1,50
+    sm = 0.
+    do ip=1,n-1
+       do iq=ip+1,n
+          sm = sm + abs(a(ip,iq))
+       enddo
+    enddo
+    if (sm == 0.) return
+
+    if (i < 4) then
+       tresh = 0.2*sm/n**2
+    else
+       tresh = 0.
+    endif
+
+    do ip=1,n-1
+       do iq=ip+1,n
+          g = 100.*abs(a(ip,iq))
+          if ((i > 4) .and. (abs(d(ip))+g == abs(d(ip))) .and. (abs(d(iq))+g == abs(d(iq)))) then
+             a(ip,iq) = 0.
+          elseif (abs(a(ip,iq)) > tresh) then
+             h = d(iq)-d(ip)
+             if (abs(h)+g == abs(h)) then
+                t = a(ip,iq)/h
+             else
+                theta = 0.5*h/a(ip,iq)
+                t = 1./(abs(theta)+sqrt(1.+theta**2))
+                if (theta < 0.) t = -t
+             endif
+             c = 1./sqrt(1+t**2)
+             s = t*c
+             tau = s/(1.+c)
+             h = t*a(ip,iq)
+             z(ip) = z(ip)-h
+             z(iq) = z(iq)+h
+             d(ip) = d(ip)-h
+             d(iq) = d(iq)+h
+             a(ip,iq) = 0.
+             do j=1,ip-1
+                g = a(j,ip); h = a(j,iq)
+                a(j,ip) = g-s*(h+g*tau)
+                a(j,iq) = h+s*(g-h*tau)
+             enddo
+             do j=ip+1,iq-1
+                g = a(ip,j); h = a(j,iq)
+                a(ip,j) = g-s*(h+g*tau)
+                a(j,iq) = h+s*(g-h*tau)
+             enddo
+             do j=iq+1,n
+                g = a(ip,j); h = a(iq,j)
+                a(ip,j) = g-s*(h+g*tau)
+                a(iq,j) = h+s*(g-h*tau)
+             enddo
+             do j=1,n
+                g = v(j,ip); h = v(j,iq)
+                v(j,ip) = g-s*(h+g*tau)
+                v(j,iq) = h+s*(g-h*tau)
+             enddo
+             nrot = nrot+1
+          endif
+       enddo
+    enddo
+
+    do ip=1,n
+       b(ip) = b(ip)+z(ip)
+       d(ip) = b(ip)
+       z(ip) = 0.
+    enddo
+ enddo
+
+end subroutine jacobi_eigen_sym
 
 end module vectorutils

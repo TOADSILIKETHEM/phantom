@@ -36,6 +36,7 @@ subroutine test_linalg(ntests,npass)
  if (id==master) write(*,"(/,a)") '--> TESTING LINEAR ALGEBRA'
 
  call test_matrix_inversion(ntests,npass)
+ call test_jacobi_eigen_sym(ntests,npass)
 
  if (id==master) write(*,"(/,a)") '<-- LINEAR ALGEBRA TESTS COMPLETE'
 
@@ -87,5 +88,56 @@ function get_Ax_local(n,x) result(Ax)
 end function get_Ax_local
 
 end subroutine test_matrix_inversion
+
+!--------------------------------------------
+!+
+!  Unit test of the symmetric Jacobi eigenvalue solver, using a
+!  matrix with an analytically known eigendecomposition: a decoupled
+!  x-axis (eigenvalue 5) plus a 2x2 y-z block [[2,0.5],[0.5,3]] whose
+!  eigenvalues/eigenvectors follow the standard closed form.
+!+
+!--------------------------------------------
+subroutine test_jacobi_eigen_sym(ntests,npass)
+ use vectorutils, only:jacobi_eigen_sym
+ integer, intent(inout) :: ntests,npass
+ integer :: nfail(6),nrot,i,j,imatch
+ real :: Asym(3,3),d(3),v(3,3)
+ real :: eval_expected(3),evec_expected(3,3)
+ real :: dtol,best,diff
+
+ if (id==master) write(*,"(/,a)") '--> checking Jacobi eigenvalue solver'
+
+ Asym = reshape((/5.0,0.0,0.0, &
+                  0.0,2.0,0.5, &
+                  0.0,0.5,3.0/),(/3,3/))
+
+ eval_expected = (/1.792893218813452,3.207106781186548,5.0/)
+ evec_expected = reshape((/0.0,-0.923879532511287,0.382683432365090, &
+                           0.0, 0.382683432365090,0.923879532511287, &
+                           1.0, 0.0,               0.0            /),(/3,3/))
+
+ call jacobi_eigen_sym(Asym,3,3,d,v,nrot)
+
+ dtol = 1.e-5
+ nfail = 0
+ do i=1,3
+    imatch = 1
+    best = abs(d(i)-eval_expected(1))
+    do j=2,3
+       diff = abs(d(i)-eval_expected(j))
+       if (diff < best) then
+          best = diff
+          imatch = j
+       endif
+    enddo
+    call checkval(d(i),eval_expected(imatch),dtol,nfail(i),'eigenvalue matches analytic value')
+    ! eigenvector direction is only defined up to an overall sign
+    call checkval(abs(dot_product(v(:,i),evec_expected(:,imatch))),1.0,dtol,nfail(3+i),&
+                  'eigenvector direction matches analytic axis')
+ enddo
+
+ call update_test_scores(ntests,nfail,npass)
+
+end subroutine test_jacobi_eigen_sym
 
 end module testlinalg
