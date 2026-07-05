@@ -37,6 +37,7 @@ subroutine test_linalg(ntests,npass)
 
  call test_matrix_inversion(ntests,npass)
  call test_jacobi_eigen_sym(ntests,npass)
+ call test_rotation_to_align(ntests,npass)
 
  if (id==master) write(*,"(/,a)") '<-- LINEAR ALGEBRA TESTS COMPLETE'
 
@@ -139,5 +140,56 @@ subroutine test_jacobi_eigen_sym(ntests,npass)
  call update_test_scores(ntests,nfail,npass)
 
 end subroutine test_jacobi_eigen_sym
+
+!--------------------------------------------
+!+
+!  Unit test of rotation_to_align, covering the generic case and both
+!  degenerate cases (already parallel, exactly antiparallel) that a
+!  live simulation run cannot reliably hit by chance.
+!+
+!--------------------------------------------
+subroutine test_rotation_to_align(ntests,npass)
+ use vectorutils, only:rotation_to_align,rotatevec
+ integer, intent(inout) :: ntests,npass
+ integer :: nfail(7)
+ real :: a(3),b(3),rot_axis(3),rot_angle,rotated(3)
+ logical :: aligned
+ real :: dtol
+
+ if (id==master) write(*,"(/,a)") '--> checking rotation_to_align'
+
+ dtol = 1.e-5
+ nfail = 0
+
+ ! Case 1: generic rotation, a perpendicular to b (x-axis onto y-axis)
+ a = (/1.,0.,0./)
+ b = (/0.,1.,0./)
+ call rotation_to_align(a,b,rot_axis,rot_angle,aligned)
+ call checkval(aligned,.false.,nfail(1),'generic case: aligned flag is false')
+ rotated = a
+ call rotatevec(rotated,rot_axis,rot_angle)
+ call checkval(3,rotated,b,dtol,nfail(2),'generic case: rotated vector matches target')
+
+ ! Case 2: already parallel (identical vectors)
+ a = (/0.,1.,0./)
+ b = (/0.,1.,0./)
+ call rotation_to_align(a,b,rot_axis,rot_angle,aligned)
+ call checkval(aligned,.true.,nfail(3),'parallel case: aligned flag is true')
+
+ ! Case 3: exactly antiparallel
+ a = (/1.,0.,0./)
+ b = (/-1.,0.,0./)
+ call rotation_to_align(a,b,rot_axis,rot_angle,aligned)
+ call checkval(aligned,.false.,nfail(4),'antiparallel case: aligned flag is false')
+ call checkval(rot_angle,3.141592653589793,dtol,nfail(5),'antiparallel case: rotation angle is pi')
+ rotated = a
+ call rotatevec(rotated,rot_axis,rot_angle)
+ call checkval(3,rotated,b,dtol,nfail(6),'antiparallel case: rotated vector matches target')
+ ! rot_axis returned by make_perp_frame must actually be perpendicular to b
+ call checkval(abs(dot_product(rot_axis,b)),0.0,dtol,nfail(7),'antiparallel case: rotation axis is perpendicular to target')
+
+ call update_test_scores(ntests,nfail,npass)
+
+end subroutine test_rotation_to_align
 
 end module testlinalg

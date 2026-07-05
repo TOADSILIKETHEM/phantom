@@ -15,11 +15,11 @@ module vectorutils
 !
 ! :Runtime parameters: None
 !
-! :Dependencies: None
+! :Dependencies: physcon
 !
  implicit none
  public :: minmaxave,cross_product,cross_product3D,curl3D_epsijk,det
- public :: matrixinvert3D,rotatevec,unitvec,mag,make_perp_frame,jacobi_eigen_sym
+ public :: matrixinvert3D,rotatevec,unitvec,mag,make_perp_frame,jacobi_eigen_sym,rotation_to_align
 
  private
 
@@ -337,5 +337,49 @@ subroutine jacobi_eigen_sym(a,n,np,d,v,nrot)
  enddo
 
 end subroutine jacobi_eigen_sym
+
+!------------------------------------------------------------------------
+!+
+!  Determine the rotation (axis + angle, Rodrigues convention) that maps
+!  unit vector a onto unit vector b. Handles the degenerate cases where a
+!  and b are already parallel (aligned=.true., no rotation needed; caller
+!  should skip applying one) or exactly antiparallel (the cross product
+!  is undefined, so the rotation is a 180 degree flip about an arbitrary
+!  axis perpendicular to b, via make_perp_frame — correct for any choice
+!  of perpendicular axis since a 180 degree rotation about any axis
+!  perpendicular to a antiparallel pair maps one onto the other).
+!+
+!------------------------------------------------------------------------
+subroutine rotation_to_align(a,b,rot_axis,rot_angle,aligned,tol)
+ use physcon, only:pi
+ real,    intent(in)  :: a(3),b(3)
+ real,    intent(out) :: rot_axis(3),rot_angle
+ logical, intent(out) :: aligned
+ real,    intent(in), optional :: tol
+ real :: cross(3),cosang,atol,perp(3),third(3)
+
+ atol = 1.e-6
+ if (present(tol)) atol = tol
+
+ call cross_product3D(a,b,cross)
+ cosang = max(-1.,min(1.,dot_product(a,b)))
+ rot_angle = acos(cosang)
+ aligned = .false.
+
+ if (mag(cross) < atol) then
+    if (cosang < 0.) then
+       call make_perp_frame(b,perp,third)
+       rot_axis  = perp
+       rot_angle = pi
+    else
+       rot_axis  = (/0.,0.,1./)
+       rot_angle = 0.
+       aligned   = .true.
+    endif
+ else
+    rot_axis = cross
+ endif
+
+end subroutine rotation_to_align
 
 end module vectorutils

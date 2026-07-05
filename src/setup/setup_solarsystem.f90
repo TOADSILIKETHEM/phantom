@@ -466,19 +466,19 @@ end subroutine compute_apophis_spin_axis
 !----------------------------------------------------------------
 subroutine align_dem_to_principal_axis(i_start,i_end,xyzmh_ptmass,vxyz_ptmass,&
                                         obliquity_deg,azimuth_deg,torque_align_deg,i_earth)
- use vectorutils, only:jacobi_eigen_sym,cross_product3D,mag,rotatevec,make_perp_frame
+ use vectorutils, only:jacobi_eigen_sym,rotatevec,rotation_to_align
  use physcon,     only:pi
  integer, intent(in)    :: i_start,i_end
  real,    intent(inout) :: xyzmh_ptmass(:,:)
  real,    intent(in)    :: vxyz_ptmass(:,:)
  real,    intent(in)    :: obliquity_deg,azimuth_deg,torque_align_deg
  integer, intent(in), optional :: i_earth
- real, parameter :: align_tol = 1.e-6
  integer :: i,n,nrot,ierr,imax
  real    :: rcm(3),dr(3)
  real    :: inertia(3,3),evec(3,3),eval(3)
  real    :: nx,ny,nz,ntarget(3),emax(3)
- real    :: rot_axis(3),rot_angle,cosang,perp(3),third(3)
+ real    :: rot_axis(3),rot_angle
+ logical :: already_aligned
 
  n = i_end - i_start + 1
  if (n < 2) return
@@ -518,22 +518,12 @@ subroutine align_dem_to_principal_axis(i_start,i_end,xyzmh_ptmass,vxyz_ptmass,&
  imax = maxloc(eval,dim=1)
  emax = evec(:,imax)
 
- ! Rotation that maps emax onto ntarget (Rodrigues, about their cross product)
- call cross_product3D(emax,ntarget,rot_axis)
- cosang = max(-1.,min(1.,dot_product(emax,ntarget)))
- rot_angle = acos(cosang)
-
- if (mag(rot_axis) < align_tol) then
-    if (cosang < 0.) then
-       ! emax and ntarget already antiparallel: flip 180 deg about any
-       ! axis perpendicular to the target (cross product is undefined here).
-       call make_perp_frame(ntarget,perp,third)
-       rot_axis  = perp
-       rot_angle = pi
-    else
-       print "(a)",' Apophis principal-axis alignment: already aligned (no rotation applied)'
-       return
-    endif
+ ! Rotation that maps emax onto ntarget (Rodrigues, about their cross product;
+ ! handles the already-aligned and exactly-antiparallel degenerate cases).
+ call rotation_to_align(emax,ntarget,rot_axis,rot_angle,already_aligned)
+ if (already_aligned) then
+    print "(a)",' Apophis principal-axis alignment: already aligned (no rotation applied)'
+    return
  endif
 
  do i = i_start, i_end
