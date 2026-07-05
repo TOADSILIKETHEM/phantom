@@ -83,6 +83,7 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  character(len=20), intent(in)    :: fileprefix
  real,              intent(out)   :: vxyzu(:,:)
  integer :: ierr,i,nerr,nptmass_dem_start
+ character(len=32) :: apophis_shape_kind
  !integer :: values(8),year,month,day
  real    :: period,semia,mtot,dx
  real    :: r_apophis,m_apophis,rtidal,spsoundmin
@@ -206,7 +207,8 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
        ! replace the sink particle with a ball of stuff
        !
        call set_shape('closepacked',id,master,np_apophis,xyzmh_ptmass(1:3,nptmass),r_apophis,&
-                      hfact,npart,xyzh,npart_total,objfile=apophis_shape_file)
+                      hfact,npart,xyzh,npart_total,objfile=apophis_shape_file,&
+                      shape_kind_out=apophis_shape_kind)
        !call set_sphere('closepacked',id,master,0.,r_apophis,dx,hfact,npart,xyzh,npart_total,&
        !                xyz_origin=xyzmh_ptmass(1:3,nptmass),exactN=.true.,np_requested=np_apophis)
 
@@ -226,6 +228,15 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
           isink_potential = 2
           ! Apply rigid-body spin after particles are placed (period=0 → skipped).
           if (apophis_spin_period > 0.) then
+             ! Sphere DEM only: reorient the lattice so its I_max principal
+             ! axis coincides with the spin axis before imposing spin
+             ! (docs/SPHERE_LATTICE_FIX.md). OBJ/mesh shapes are untouched.
+             if (trim(apophis_shape_kind) == 'sphere') then
+                call align_dem_to_principal_axis(nptmass_dem_start+1,nptmass,&
+                                                 xyzmh_ptmass,vxyz_ptmass,&
+                                                 apophis_spin_obliquity,apophis_spin_azimuth,&
+                                                 apophis_spin_torque_align_deg,i_earth=4)
+             endif
              call apply_apophis_spin(nptmass_dem_start+1,nptmass,&
                                      xyzmh_ptmass,vxyz_ptmass,&
                                      apophis_spin_period,apophis_spin_obliquity,&
@@ -437,6 +448,105 @@ subroutine compute_apophis_spin_axis(i_start,i_end,xyzmh_ptmass,vxyz_ptmass,&
  endif
 
 end subroutine compute_apophis_spin_axis
+
+!----------------------------------------------------------------
+!+
+!  Reorient a closepacked-lattice DEM sphere about its centre of mass
+!  so its maximum-inertia principal axis aligns with the spin axis
+!  apply_apophis_spin is about to impose. A finite HCP lattice cropped
+!  to a sphere is not exactly isotropic (~2% spread in principal
+!  moments, fixed in the simulation x/y/z frame regardless of the
+!  requested spin axis); without this step, sweeping the spin axis
+!  spins the same slightly-triaxial body about different axes
+!  relative to its own principal axes, biasing the intrinsic spin
+!  period estimate (docs/METRICS.md, docs/SPHERE_LATTICE_FIX.md).
+!  No-op if fewer than 2 grains, if the axis computation aborts
+!  (mirrors compute_apophis_spin_axis's ierr), or if already aligned.
+!+
+!----------------------------------------------------------------
+subroutine align_dem_to_principal_axis(i_start,i_end,xyzmh_ptmass,vxyz_ptmass,&
+                                        obliquity_deg,azimuth_deg,torque_align_deg,i_earth)
+ use vectorutils, only:jacobi_eigen_sym,cross_product3D,mag,rotatevec,make_perp_frame
+ use physcon,     only:pi
+ integer, intent(in)    :: i_start,i_end
+ real,    intent(inout) :: xyzmh_ptmass(:,:)
+ real,    intent(in)    :: vxyz_ptmass(:,:)
+ real,    intent(in)    :: obliquity_deg,azimuth_deg,torque_align_deg
+ integer, intent(in), optional :: i_earth
+ real, parameter :: align_tol = 1.e-6
+ integer :: i,n,nrot,ierr,imax
+ real    :: rcm(3),dr(3)
+ real    :: inertia(3,3),evec(3,3),eval(3)
+ real    :: nx,ny,nz,ntarget(3),emax(3)
+ real    :: rot_axis(3),rot_angle,cosang,perp(3),third(3)
+
+ n = i_end - i_start + 1
+ if (n < 2) return
+
+ ! Target spin axis: identical computation apply_apophis_spin will use
+ ! (verbose=.false. so setup.log doesn't get the h_hat/r_hat lines twice).
+ call compute_apophis_spin_axis(i_start,i_end,xyzmh_ptmass,vxyz_ptmass,&
+                                 obliquity_deg,azimuth_deg,torque_align_deg,&
+                                 nx,ny,nz,ierr,i_earth=i_earth,verbose=.false.)
+ if (ierr /= 0) return
+ ntarget = (/nx,ny,nz/)
+
+ ! Centre of mass of DEM grains
+ rcm = 0.
+ do i = i_start, i_end
+    rcm(1:3) = rcm(1:3) + xyzmh_ptmass(1:3,i)
+ enddo
+ rcm = rcm / real(n)
+
+ ! Equal-mass grain inertia tensor about the CoM (mass factor cancels
+ ! in the eigenvectors, so it is omitted; only directions are needed)
+ inertia = 0.
+ do i = i_start, i_end
+    dr = xyzmh_ptmass(1:3,i) - rcm
+    inertia(1,1) = inertia(1,1) + dr(2)**2 + dr(3)**2
+    inertia(2,2) = inertia(2,2) + dr(1)**2 + dr(3)**2
+    inertia(3,3) = inertia(3,3) + dr(1)**2 + dr(2)**2
+    inertia(1,2) = inertia(1,2) - dr(1)*dr(2)
+    inertia(1,3) = inertia(1,3) - dr(1)*dr(3)
+    inertia(2,3) = inertia(2,3) - dr(2)*dr(3)
+ enddo
+ inertia(2,1) = inertia(1,2)
+ inertia(3,1) = inertia(1,3)
+ inertia(3,2) = inertia(2,3)
+
+ call jacobi_eigen_sym(inertia,3,3,eval,evec,nrot)
+ imax = maxloc(eval,dim=1)
+ emax = evec(:,imax)
+
+ ! Rotation that maps emax onto ntarget (Rodrigues, about their cross product)
+ call cross_product3D(emax,ntarget,rot_axis)
+ cosang = max(-1.,min(1.,dot_product(emax,ntarget)))
+ rot_angle = acos(cosang)
+
+ if (mag(rot_axis) < align_tol) then
+    if (cosang < 0.) then
+       ! emax and ntarget already antiparallel: flip 180 deg about any
+       ! axis perpendicular to the target (cross product is undefined here).
+       call make_perp_frame(ntarget,perp,third)
+       rot_axis  = perp
+       rot_angle = pi
+    else
+       print "(a)",' Apophis principal-axis alignment: already aligned (no rotation applied)'
+       return
+    endif
+ endif
+
+ do i = i_start, i_end
+    dr = xyzmh_ptmass(1:3,i) - rcm
+    call rotatevec(dr,rot_axis,rot_angle)
+    xyzmh_ptmass(1:3,i) = rcm + dr
+ enddo
+
+ print "(a,3(1pg10.3,1x))",' Apophis principal moments of inertia = ',eval(1),eval(2),eval(3)
+ print "(a,1pg10.3,a)",' Apophis principal-axis alignment: rotated grains by ',&
+       rot_angle*180./pi,' deg so I_max axis || prescribed spin axis'
+
+end subroutine align_dem_to_principal_axis
 
 !----------------------------------------------------------------
 !+
