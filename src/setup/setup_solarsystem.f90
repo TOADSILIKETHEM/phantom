@@ -42,6 +42,11 @@ character(len=256) :: apophis_shape_file
  real :: apophis_spin_period    ! rotation period in hours (0 = no spin)
  real :: apophis_spin_obliquity ! obliquity of spin axis from ecliptic north (degrees)
  real :: apophis_spin_azimuth   ! azimuth of spin axis in ecliptic plane (degrees)
+ ! Flyby torque-alignment mode: rotate spin axis from +h to -h about Earth-Apophis separation.
+ ! h = unit(r_apophis - r_earth) x unit(v_apophis - v_earth) at setup epoch.
+ ! 0 deg = spin axis parallel to +h; 180 deg = parallel to -h (opposite to +h).
+ ! Values < 0 disable this mode (use obliquity/azimuth instead).
+ real :: apophis_spin_torque_align_deg
 
  private
 
@@ -102,6 +107,7 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
  apophis_spin_period    = 0.
  apophis_spin_obliquity = 0.
  apophis_spin_azimuth   = 0.
+ apophis_spin_torque_align_deg = -1.
 !
 ! read runtime parameters from setup file
 !
@@ -223,7 +229,8 @@ subroutine setpart(id,npart,npartoftype,xyzh,massoftype,vxyzu,polyk,gamma,hfact,
              call apply_apophis_spin(nptmass_dem_start+1,nptmass,&
                                      xyzmh_ptmass,vxyz_ptmass,&
                                      apophis_spin_period,apophis_spin_obliquity,&
-                                     apophis_spin_azimuth,utime)
+                                     apophis_spin_azimuth,utime,&
+                                     apophis_spin_torque_align_deg,i_earth=4)
           endif
        endif
        !
@@ -337,28 +344,82 @@ end subroutine replace_gas_with_dem
 !+
 !----------------------------------------------------------------
 subroutine apply_apophis_spin(i_start,i_end,xyzmh_ptmass,vxyz_ptmass,&
-                               period_hr,obliquity_deg,azimuth_deg,utime)
+                               period_hr,obliquity_deg,azimuth_deg,utime,&
+                               torque_align_deg,i_earth)
  use physcon, only:pi
  integer, intent(in)    :: i_start,i_end
  real,    intent(inout) :: xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
  real,    intent(in)    :: period_hr,obliquity_deg,azimuth_deg,utime
- integer :: i,n
+ real,    intent(in)    :: torque_align_deg
+ integer, intent(in), optional :: i_earth
+ integer :: i,n,ie
  real    :: obl_rad,az_rad,omega,nx,ny,nz
  real    :: rcm(3),dr(3),v_spin(3)
+ real    :: rrel(3),vrel(3),hvec(3),rhat(3),hnorm,hn(3)
+ real    :: theta,ct,st,kdotv
 
  n = i_end - i_start + 1
  if (n < 1 .or. period_hr <= 0.) return
 
- obl_rad = obliquity_deg * pi / 180.
- az_rad  = azimuth_deg   * pi / 180.
-
  ! Angular velocity in code units: omega = 2*pi / T, T = period_hr * 3600 s / utime
  omega = 2.*pi / (period_hr * 3600. / utime)
 
- ! Spin axis unit vector from obliquity and azimuth
+ if (torque_align_deg >= 0.) then
+    if (.not.present(i_earth)) then
+       print "(a)",' ERROR: apophis_spin_torque_align_deg requires Earth sink index'
+       return
+    endif
+    ie = i_earth
+    if (ie < 1 .or. ie > size(xyzmh_ptmass,2)) return
+    ! Apophis DEM centre-of-mass position and velocity at setup epoch.
+    rcm = 0.
+    v_spin = 0.
+    do i = i_start, i_end
+       rcm(1:3) = rcm(1:3) + xyzmh_ptmass(1:3,i)
+       v_spin(1:3) = v_spin(1:3) + vxyz_ptmass(1:3,i)
+    enddo
+    rcm = rcm / real(n)
+    v_spin = v_spin / real(n)
+    rrel = rcm - xyzmh_ptmass(1:3,ie)
+    vrel = v_spin - vxyz_ptmass(1:3,ie)
+    hvec = (/ rrel(2)*vrel(3) - rrel(3)*vrel(2), &
+              rrel(3)*vrel(1) - rrel(1)*vrel(3), &
+              rrel(1)*vrel(2) - rrel(2)*vrel(1) /)
+    hnorm = sqrt(sum(rrel**2))
+    if (hnorm <= 0.) then
+       print "(a)",' WARN: zero Earth-Apophis separation; using ecliptic spin axis'
+       goto 101
+    endif
+    rhat = rrel / hnorm
+    hnorm = sqrt(sum(hvec**2))
+    if (hnorm <= 0.) then
+       print "(a)",' WARN: collinear Earth-Apophis r,v; using ecliptic spin axis'
+       goto 101
+    endif
+    hn = hvec / hnorm
+    ! Rodrigues rotation of hn about rhat by torque_align_deg (0=+h, 180=-h).
+    theta = torque_align_deg * pi / 180.
+    ct = cos(theta)
+    st = sin(theta)
+    kdotv = rhat(1)*hn(1) + rhat(2)*hn(2) + rhat(3)*hn(3)
+    nx = hn(1)*ct + (rhat(2)*hn(3) - rhat(3)*hn(2))*st + rhat(1)*kdotv*(1.-ct)
+    ny = hn(2)*ct + (rhat(3)*hn(1) - rhat(1)*hn(3))*st + rhat(2)*kdotv*(1.-ct)
+    nz = hn(3)*ct + (rhat(1)*hn(2) - rhat(2)*hn(1))*st + rhat(3)*kdotv*(1.-ct)
+    print "(a,1pg10.3,a)",' Apophis spin torque-align = ',torque_align_deg,' deg (0=+h, 180=-h)'
+    print "(a,3(1pg10.3,1x))",' Earth-Apophis h_hat (orbit normal) = ',hn(1),hn(2),hn(3)
+    print "(a,3(1pg10.3,1x))",' Earth-Apophis r_hat (separation) = ',rhat(1),rhat(2),rhat(3)
+    goto 102
+ endif
+
+101 continue
+ obl_rad = obliquity_deg * pi / 180.
+ az_rad  = azimuth_deg   * pi / 180.
+ ! Spin axis unit vector from obliquity and azimuth (ecliptic frame)
  nx = sin(obl_rad) * cos(az_rad)
  ny = sin(obl_rad) * sin(az_rad)
  nz = cos(obl_rad)
+
+102 continue
 
  ! Centre of mass of DEM particles
  rcm = 0.
@@ -415,6 +476,8 @@ call write_inopt(apophis_shape_file,'apophis_shape_file','shape config file for 
  call write_inopt(apophis_spin_period,   'apophis_spin_period',   'Apophis spin period in hours (0 = no spin, DEM only)',iunit)
  call write_inopt(apophis_spin_obliquity,'apophis_spin_obliquity','obliquity of spin axis from ecliptic north (degrees)',iunit)
  call write_inopt(apophis_spin_azimuth,  'apophis_spin_azimuth',  'azimuth of spin axis in ecliptic plane (degrees)',iunit)
+ call write_inopt(apophis_spin_torque_align_deg,'apophis_spin_torque_align_deg',&
+      'flyby torque alignment: rotate spin from +h to -h about Earth-Apophis r_hat; <0=use obl/az',iunit)
 
  close(iunit)
 
@@ -454,6 +517,7 @@ call read_inopt(apophis_shape_file,'apophis_shape_file',db,default='apophis.shap
  call read_inopt(apophis_spin_period,   'apophis_spin_period',   db,default=0.0,errcount=nerr)
  call read_inopt(apophis_spin_obliquity,'apophis_spin_obliquity',db,default=0.0,errcount=nerr)
  call read_inopt(apophis_spin_azimuth,  'apophis_spin_azimuth',  db,default=0.0,errcount=nerr)
+ call read_inopt(apophis_spin_torque_align_deg,'apophis_spin_torque_align_deg',db,default=-1.0,errcount=nerr)
 
  call close_db(db)
 
