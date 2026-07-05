@@ -336,41 +336,55 @@ end subroutine replace_gas_with_dem
 
 !----------------------------------------------------------------
 !+
-!  Apply rigid-body spin to DEM sink particles after placement.
-!  Computes the angular velocity from the requested spin period,
-!  then adds v_spin = omega_vec x (r_i - r_cm) to each particle so
-!  the rubble pile enters the simulation already rotating.
-!  No-op when period_hr <= 0 or the index range is empty.
+!  Compute the prescribed Apophis spin axis unit vector, either from
+!  the flyby torque-alignment parameterisation (rotate the
+!  Earth-Apophis orbital angular momentum direction about the
+!  separation vector by torque_align_deg) or from ecliptic
+!  obliquity/azimuth. ierr=0 on success; ierr/=0 means the caller must
+!  not apply any spin (mirrors the original apply_apophis_spin abort
+!  conditions: torque-align requested but no Earth sink index given,
+!  or the given index is out of range). verbose (default true)
+!  controls whether the diagnostic h_hat/r_hat/torque-align lines are
+!  printed, so callers that need the axis without re-printing
+!  diagnostics (e.g. the lattice pre-alignment step) can pass .false.
 !+
 !----------------------------------------------------------------
-subroutine apply_apophis_spin(i_start,i_end,xyzmh_ptmass,vxyz_ptmass,&
-                               period_hr,obliquity_deg,azimuth_deg,utime,&
-                               torque_align_deg,i_earth)
+subroutine compute_apophis_spin_axis(i_start,i_end,xyzmh_ptmass,vxyz_ptmass,&
+                                      obliquity_deg,azimuth_deg,torque_align_deg,&
+                                      nx,ny,nz,ierr,i_earth,verbose)
  use physcon, only:pi
- integer, intent(in)    :: i_start,i_end
- real,    intent(inout) :: xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
- real,    intent(in)    :: period_hr,obliquity_deg,azimuth_deg,utime
- real,    intent(in)    :: torque_align_deg
+ integer, intent(in)  :: i_start,i_end
+ real,    intent(in)  :: xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
+ real,    intent(in)  :: obliquity_deg,azimuth_deg,torque_align_deg
+ real,    intent(out) :: nx,ny,nz
+ integer, intent(out) :: ierr
  integer, intent(in), optional :: i_earth
+ logical, intent(in), optional :: verbose
  integer :: i,n,ie
- real    :: obl_rad,az_rad,omega,nx,ny,nz
- real    :: rcm(3),dr(3),v_spin(3)
+ real    :: obl_rad,az_rad
+ real    :: rcm(3),v_spin(3)
  real    :: rrel(3),vrel(3),hvec(3),rhat(3),hnorm,hn(3)
  real    :: theta,ct,st,kdotv
+ logical :: use_torque_align,say
 
+ say = .true.
+ if (present(verbose)) say = verbose
+ ierr = 0
+ use_torque_align = .false.
+ nx = 0.; ny = 0.; nz = 1.
  n = i_end - i_start + 1
- if (n < 1 .or. period_hr <= 0.) return
-
- ! Angular velocity in code units: omega = 2*pi / T, T = period_hr * 3600 s / utime
- omega = 2.*pi / (period_hr * 3600. / utime)
 
  if (torque_align_deg >= 0.) then
     if (.not.present(i_earth)) then
-       print "(a)",' ERROR: apophis_spin_torque_align_deg requires Earth sink index'
+       if (say) print "(a)",' ERROR: apophis_spin_torque_align_deg requires Earth sink index'
+       ierr = 1
        return
     endif
     ie = i_earth
-    if (ie < 1 .or. ie > size(xyzmh_ptmass,2)) return
+    if (ie < 1 .or. ie > size(xyzmh_ptmass,2)) then
+       ierr = 1
+       return
+    endif
     ! Apophis DEM centre-of-mass position and velocity at setup epoch.
     rcm = 0.
     v_spin = 0.
@@ -387,39 +401,75 @@ subroutine apply_apophis_spin(i_start,i_end,xyzmh_ptmass,vxyz_ptmass,&
               rrel(1)*vrel(2) - rrel(2)*vrel(1) /)
     hnorm = sqrt(sum(rrel**2))
     if (hnorm <= 0.) then
-       print "(a)",' WARN: zero Earth-Apophis separation; using ecliptic spin axis'
-       goto 101
+       if (say) print "(a)",' WARN: zero Earth-Apophis separation; using ecliptic spin axis'
+    else
+       rhat = rrel / hnorm
+       hnorm = sqrt(sum(hvec**2))
+       if (hnorm <= 0.) then
+          if (say) print "(a)",' WARN: collinear Earth-Apophis r,v; using ecliptic spin axis'
+       else
+          hn = hvec / hnorm
+          ! Rodrigues rotation of hn about rhat by torque_align_deg (0=+h, 180=-h).
+          theta = torque_align_deg * pi / 180.
+          ct = cos(theta)
+          st = sin(theta)
+          kdotv = rhat(1)*hn(1) + rhat(2)*hn(2) + rhat(3)*hn(3)
+          nx = hn(1)*ct + (rhat(2)*hn(3) - rhat(3)*hn(2))*st + rhat(1)*kdotv*(1.-ct)
+          ny = hn(2)*ct + (rhat(3)*hn(1) - rhat(1)*hn(3))*st + rhat(2)*kdotv*(1.-ct)
+          nz = hn(3)*ct + (rhat(1)*hn(2) - rhat(2)*hn(1))*st + rhat(3)*kdotv*(1.-ct)
+          if (say) then
+             print "(a,1pg10.3,a)",' Apophis spin torque-align = ',torque_align_deg,' deg (0=+h, 180=-h)'
+             print "(a,3(1pg10.3,1x))",' Earth-Apophis h_hat (orbit normal) = ',hn(1),hn(2),hn(3)
+             print "(a,3(1pg10.3,1x))",' Earth-Apophis r_hat (separation) = ',rhat(1),rhat(2),rhat(3)
+          endif
+          use_torque_align = .true.
+       endif
     endif
-    rhat = rrel / hnorm
-    hnorm = sqrt(sum(hvec**2))
-    if (hnorm <= 0.) then
-       print "(a)",' WARN: collinear Earth-Apophis r,v; using ecliptic spin axis'
-       goto 101
-    endif
-    hn = hvec / hnorm
-    ! Rodrigues rotation of hn about rhat by torque_align_deg (0=+h, 180=-h).
-    theta = torque_align_deg * pi / 180.
-    ct = cos(theta)
-    st = sin(theta)
-    kdotv = rhat(1)*hn(1) + rhat(2)*hn(2) + rhat(3)*hn(3)
-    nx = hn(1)*ct + (rhat(2)*hn(3) - rhat(3)*hn(2))*st + rhat(1)*kdotv*(1.-ct)
-    ny = hn(2)*ct + (rhat(3)*hn(1) - rhat(1)*hn(3))*st + rhat(2)*kdotv*(1.-ct)
-    nz = hn(3)*ct + (rhat(1)*hn(2) - rhat(2)*hn(1))*st + rhat(3)*kdotv*(1.-ct)
-    print "(a,1pg10.3,a)",' Apophis spin torque-align = ',torque_align_deg,' deg (0=+h, 180=-h)'
-    print "(a,3(1pg10.3,1x))",' Earth-Apophis h_hat (orbit normal) = ',hn(1),hn(2),hn(3)
-    print "(a,3(1pg10.3,1x))",' Earth-Apophis r_hat (separation) = ',rhat(1),rhat(2),rhat(3)
-    goto 102
  endif
 
-101 continue
- obl_rad = obliquity_deg * pi / 180.
- az_rad  = azimuth_deg   * pi / 180.
- ! Spin axis unit vector from obliquity and azimuth (ecliptic frame)
- nx = sin(obl_rad) * cos(az_rad)
- ny = sin(obl_rad) * sin(az_rad)
- nz = cos(obl_rad)
+ if (.not.use_torque_align) then
+    obl_rad = obliquity_deg * pi / 180.
+    az_rad  = azimuth_deg   * pi / 180.
+    ! Spin axis unit vector from obliquity and azimuth (ecliptic frame)
+    nx = sin(obl_rad) * cos(az_rad)
+    ny = sin(obl_rad) * sin(az_rad)
+    nz = cos(obl_rad)
+ endif
 
-102 continue
+end subroutine compute_apophis_spin_axis
+
+!----------------------------------------------------------------
+!+
+!  Apply rigid-body spin to DEM sink particles after placement.
+!  Computes the angular velocity from the requested spin period,
+!  then adds v_spin = omega_vec x (r_i - r_cm) to each particle so
+!  the rubble pile enters the simulation already rotating.
+!  No-op when period_hr <= 0 or the index range is empty.
+!+
+!----------------------------------------------------------------
+subroutine apply_apophis_spin(i_start,i_end,xyzmh_ptmass,vxyz_ptmass,&
+                               period_hr,obliquity_deg,azimuth_deg,utime,&
+                               torque_align_deg,i_earth)
+ use physcon, only:pi
+ integer, intent(in)    :: i_start,i_end
+ real,    intent(inout) :: xyzmh_ptmass(:,:),vxyz_ptmass(:,:)
+ real,    intent(in)    :: period_hr,obliquity_deg,azimuth_deg,utime
+ real,    intent(in)    :: torque_align_deg
+ integer, intent(in), optional :: i_earth
+ integer :: i,n,ierr
+ real    :: omega,nx,ny,nz
+ real    :: rcm(3),dr(3),v_spin(3)
+
+ n = i_end - i_start + 1
+ if (n < 1 .or. period_hr <= 0.) return
+
+ ! Angular velocity in code units: omega = 2*pi / T, T = period_hr * 3600 s / utime
+ omega = 2.*pi / (period_hr * 3600. / utime)
+
+ call compute_apophis_spin_axis(i_start,i_end,xyzmh_ptmass,vxyz_ptmass,&
+                                 obliquity_deg,azimuth_deg,torque_align_deg,&
+                                 nx,ny,nz,ierr,i_earth=i_earth)
+ if (ierr /= 0) return
 
  ! Centre of mass of DEM particles
  rcm = 0.
